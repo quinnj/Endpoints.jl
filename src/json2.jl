@@ -1,7 +1,7 @@
 module JSON2
 
 macro repeat(N, expr)
-    blk = quote end
+    blk = esc(quote end)
     foreach(x->push!(blk.args, expr), 1:N)
     return blk
 end
@@ -132,7 +132,7 @@ function read{T <: Integer}(::Type{T}, io::IOBuffer)
     return ifelse(negative, -v, v)
 end
 
-const REF = Array(Ptr{UInt8},1)
+const REF = Vector{Ptr{UInt8}}(1)
 
 function read{T <: AbstractFloat}(::Type{T}, io::IOBuffer)
     v = zero(T)

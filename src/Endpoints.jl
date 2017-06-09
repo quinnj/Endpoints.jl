@@ -1,5 +1,7 @@
 module Endpoints
 
+using HTTP
+
 include("json2.jl")
 
 function parsequerystring(query::String)
@@ -129,21 +131,11 @@ function __uri_dispatch__ end
 const PATH_LOOKUPS = Dict{String,DataType}()
 
 # get, head, post, put, delete, trace, connect, patch, options
-const METHOD_VALS = Dict{String, DataType}(
-    "GET"     => Val{:GET},
-    "HEAD"    => Val{:HEAD},
-    "POST"    => Val{:POST},
-    "PUT"     => Val{:PUT},
-    "DELETE"  => Val{:DELETE},
-    "TRACE"   => Val{:TRACE},
-    "CONNECT" => Val{:CONNECT},
-    "PATCH"   => Val{:PATCH},
-    "OPTIONS" => Val{:OPTIONS}
-)
+const METHOD_VALS = Dict{HTTP.Method, DataType}(m=>Val{Symbol(m)} for m in instances(HTTP.Method))
 
 function handler404(req, resp)
     resp.status = 404
-    resp.data = req.resource.data
+    resp.body = HTTP.FIFOBuffer(HTTP.resource(HTTP.uri(req)))
     return resp
 end
 
@@ -157,11 +149,11 @@ end
 const BUF = IOBuffer()
 
 function handler(req, resp)
-    vals_and_args = Any[get(PATH_LOOKUPS, seg, seg) for seg in splitpath(req.resource, length(BASE_PATH) + 1)]
-    method_val = METHOD_VALS[req.method]
-    query_params = parsequerystring(req.uri.query)
-    if length(req.data) > 0
-        push!(vals_and_args, String(req.data))
+    vals_and_args = Any[get(PATH_LOOKUPS, seg, seg) for seg in HTTP.splitpath(HTTP.resource(HTTP.uri(req)), length(BASE_PATH) + 1)]
+    method_val = METHOD_VALS[HTTP.method(req)]
+    query_params = parsequerystring(HTTP.query(HTTP.uri(req)))
+    if length(HTTP.body(req)) > 0
+        push!(vals_and_args, String(take!(req)))
     end
     local ret
     try
@@ -174,7 +166,7 @@ function handler(req, resp)
         rethrow(e)
     end
     JSON2.write(BUF, ret)
-    resp.data = takebuf_array(BUF)
+    resp.body = HTTP.FIFOBuffer(take!(BUF))
     return resp
 end
 
