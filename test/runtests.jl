@@ -2,10 +2,13 @@ using Endpoints, Base.Test, HTTP
 
 include("json2.jl")
 
-Endpoints.@GET "test" ()->"testing GET resource"
-Endpoints.@GET "test/{var::String}" var->"testing $var resource"
-Endpoints.@GET "test/int/{var::Int}" var->"testing int $var resource"
-Endpoints.@GET "test/type/{::Type{T}}" T->parse(T, "1")
+Endpoints.@GET (@__MODULE__) "test" ()->"testing GET resource"
+Endpoints.@GET @__MODULE__ "test/{var::String}" var->"testing $var resource"
+Endpoints.@GET @__MODULE__ "test/int/{var::Int}" var->"testing int $var resource"
+Endpoints.@GET @__MODULE__ "test/type/{::Type{T}}" T->parse(T, "1")
+# Issue #2
+path = "/test/dynamic/path"
+Endpoints.@GET path ()->"testing path from variable"
 
 type Bod
     id::Int

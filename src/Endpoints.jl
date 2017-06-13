@@ -37,43 +37,44 @@ end
  # query parameters are always passed as String values, leaving the julia function itself to perform any conversions
 
 macro GET(resource, func)
-    generate_dispatch("GET", resource, nothing, func)
+    generate_dispatch("GET", __module__, resource, nothing, func)
 end
 
 macro HEAD(resource, func)
-    generate_dispatch("HEAD", resource, nothing, func)
+    generate_dispatch("HEAD", __module__, resource, nothing, func)
 end
 
 macro POST(resource, body, func)
-    generate_dispatch("POST", resource, body, func)
+    generate_dispatch("POST", __module__, resource, body, func)
 end
 
 macro PUT(resource, body, func)
-    generate_dispatch("PUT", resource, body, func)
+    generate_dispatch("PUT", __module__, resource, body, func)
 end
 
 macro DELETE(resource, func)
-    generate_dispatch("DELETE", resource, nothing, func)
+    generate_dispatch("DELETE", __module__, resource, nothing, func)
 end
 
 macro CONNECT(resource, func)
-    generate_dispatch("CONNECT", resource, nothing, func)
+    generate_dispatch("CONNECT", __module__, resource, nothing, func)
 end
 
 macro OPTIONS(resource, func)
-    generate_dispatch("OPTIONS", resource, nothing, func)
+    generate_dispatch("OPTIONS", __module__, resource, nothing, func)
 end
 
 macro TRACE(resource, func)
-    generate_dispatch("TRACE", resource, nothing, func)
+    generate_dispatch("TRACE", __module__, resource, nothing, func)
 end
 
 macro PATCH(resource, body, func)
-    generate_dispatch("PATCH", resource, body, func)
+    generate_dispatch("PATCH", __module__, resource, body, func)
 end
 
 
-function generate_dispatch(method, resource, body, func)
+function generate_dispatch(method, mod, resource_input, body, func)
+    resource = typeof(resource_input) <: AbstractString ? resource_input : eval(mod, resource_input)
     # split resource into Val & args
     args = []
     vals_and_args = []
