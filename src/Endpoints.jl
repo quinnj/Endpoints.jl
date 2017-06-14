@@ -37,7 +37,7 @@ end
  # query parameters are always passed as String values, leaving the julia function itself to perform any conversions
 
 macro GET(resource, func)
-    generate_dispatch("GET", __module__, resource, nothing, func)
+    generate_dispatch("GET", resource, nothing, func)
 end
 
 macro HEAD(resource, func)
@@ -73,13 +73,46 @@ macro PATCH(resource, body, func)
 end
 
 
-function generate_dispatch(method, mod, resource_input, body, func)
-    resource = typeof(resource_input) <: AbstractString ? resource_input : eval(mod, resource_input)
+function generate_dispatch(method, resource, body, func)
+    #resource = typeof(resource_input) <: AbstractString ? resource_input : eval(mod, resource_input)
     # split resource into Val & args
     args = []
+    vals = []
     vals_and_args = []
+    route_opts = []
+    domain = []
+    scheme = []
     convert_args_block = quote end
-    paths = split(resource, "/"; keep=false)
+
+    if contains(resource, "://")
+        #has scheme
+        s = split(resource, "://"; keep=false)
+        scheme, resource = s[1], s[2]
+        schsym = Symbol(scheme)
+        push!(vals_and_args, :(::Type{Val{$(QuoteNode(schsym))}}))
+        push!(route_opts, "scheme")
+
+        s = split(resource, "/",; keep=false)
+        domain, paths = s[1], s[2:end]
+        domain = domain[1] == '{' && domain[end] == '}' ? domain : split(domain, "."; keep=false)
+        temp_paths = paths
+        paths = vcat(domain, paths)
+        push!(route_opts, "domain")
+    else
+        dmn_reg = match(r"^[{a-zA-Z0-9}]+\.[{a-zA-Z0-9}]+\.[{a-zA-Z0-9}]+", resource)
+        if dmn_reg != nothing
+            domain = dmn_reg.match
+            domain = domain[1] == '{' && domain[end] == '}' ? domain : split(domain, "."; keep=false)
+            paths = split(resource, "/"; keep=false)[2:end]
+            paths = vcat(domain, paths)
+            push!(route_opts, "domain")
+        end
+    end
+    if length(domain) == 0
+        #if above both conditions fails
+        paths = split(resource, "/"; keep=false)
+    end
+
     for path in paths
         path == "" && continue
         if path[1] == '{' && path[end] == '}'
@@ -107,8 +140,10 @@ function generate_dispatch(method, mod, resource_input, body, func)
             pathsym = Symbol(path)
             push!(vals_and_args, :(::Type{Val{$(QuoteNode(pathsym))}}))
             Endpoints.PATH_LOOKUPS[path] = Val{pathsym}
+            push!(vals, Val{pathsym})
         end
     end
+
     method_val = Type{Val{Symbol(method)}}
     if body != nothing
         spl = split(string(body), "::")
@@ -118,6 +153,14 @@ function generate_dispatch(method, mod, resource_input, body, func)
         typ = length(spl) > 1 ? Symbol(spl[2]) : :String
         push!(convert_args_block.args, :($(Symbol(nm)) = JSON2.read($(eval(current_module(), typ)), IOBuffer($(Symbol(nm))))))
     end
+
+    if length(route_opts) > 0
+        #exclude the scheme and domain args
+        start = length(domain) + 1
+        #For now assuming that resource path is always there
+        OPT_PATHS_MATCHES[vals[start:end]] = route_opts
+    end
+
     return quote
         function $(esc(Symbol(Endpoints))).$(:__uri_dispatch__)(::$(method_val), $(vals_and_args...); query_params...)
             # convert args to expected types
@@ -129,6 +172,8 @@ end
 
 function __uri_dispatch__ end
 
+const OPTIONS = ["domain","scheme"]
+const OPT_PATHS_MATCHES = Dict{Any,Any}()
 const PATH_LOOKUPS = Dict{String,DataType}()
 
 # get, head, post, put, delete, trace, connect, patch, options
@@ -156,6 +201,32 @@ function handler(req, resp)
     if length(HTTP.body(req)) > 0
         push!(vals_and_args, String(take!(req)))
     end
+
+    if haskey(OPT_PATHS_MATCHES, vals_and_args)
+        req_opts = OPT_PATHS_MATCHES[vals_and_args]
+        for opt in OPTIONS
+            if opt in req_opts
+                if opt == "scheme"
+                    schsym = Symbol(HTTP.scheme(HTTP.uri(req)))
+                    println(HTTP.scheme(HTTP.uri(req)))
+                    # Manually setting to show that scheme routing works
+                    schsym = Symbol("http")
+                    vals_and_args = vcat(Val{schsym}, vals_and_args)
+                    #vars_and_args = vcat(Val{schsym}, vals_and_args)
+                elseif opt == "domain"
+                    # Printing to show that for local host the host of the URL is empty
+                    println(HTTP.host(HTTP.uri(req)))
+                    domain = split(HTTP.host(HTTP.uri(req)), '.'; keep=false)
+                    # Manually setting to show that host routing works
+                    domain = split("www.google.com", '.'; keep=false)
+                    hostsym = map(Symbol, domain)
+                    hostval = map(getval, hostsym)
+                    vals_and_args = vcat(hostval, vals_and_args)
+                end
+            end
+        end
+    end
+    
     local ret
     try
         ret = Endpoints.__uri_dispatch__(method_val, vals_and_args...; query_params...)
@@ -171,6 +242,9 @@ function handler(req, resp)
     return resp
 end
 
+function getval(sym)
+    return Val{sym}
+end
 #TODO
  # figure out a good way to do user authentication; add filterfunc(request)::Bool capabilities
  # handle 405 method not allowed for paths that match, but method doesn't
