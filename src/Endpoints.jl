@@ -77,8 +77,34 @@ function generate_dispatch(method, resource, body, func)
     # split resource into Val & args
     args = []
     vals_and_args = []
+    body_vals_args = []
     convert_args_block = quote end
-    paths = split(resource, "/"; keep=false)
+    route_conds = Dict{String, Any}()
+    path_conds = []
+    seg_types = []
+
+    if contains(resource, "://")
+        # has scheme
+        s = split(resource, "://"; keep=false)
+        scheme, resource = s[1], s[2]
+        route_conds["scheme"] = scheme
+
+        s = split(resource, "/",; keep=false)
+        domain, paths = s[1], s[2:end]
+        domain = (domain[1] == '{' && domain[end] == '}') ? nothing : domain
+        route_conds["domain"] = domain
+    else
+        domain_reg = match(r"^[{a-zA-Z0-9}]+\.[{a-zA-Z0-9}]+\.[{a-zA-Z0-9}]+", resource)
+        if domain_reg != nothing
+            domain = domain_reg.match
+            domain = domain[1] == '{' && domain[end] == '}' ? nothing : domain
+            paths = split(resource, "/"; keep=false)[2:end]
+            route_conds["domain"] = domain
+        else
+            paths = split(resource, "/"; keep=false)
+        end
+    end
+
     for path in paths
         path == "" && continue
         if path[1] == '{' && path[end] == '}'
@@ -101,22 +127,36 @@ function generate_dispatch(method, resource, body, func)
             end
             string_arg = replace(arg, r"::.+", "::String")
             push!(vals_and_args, parse(string_arg))
+            push!(path_conds, arg)
+            push!(seg_types, "var")
         else
             # hard-coded path value
             pathsym = Symbol(path)
             push!(vals_and_args, :(::Type{Val{$(QuoteNode(pathsym))}}))
-            Endpoints.PATH_LOOKUPS[path] = Val{pathsym}
+            push!(path_conds, Val{pathsym})
+            #Endpoints.PATH_LOOKUPS[path] = Val{pathsym}
+            push!(seg_types, "hard-coded")
         end
     end
     method_val = Type{Val{Symbol(method)}}
+    route_conds["method"] = Val{Symbol(method)}
+    route_conds["path"] = path_conds
+
     if body != nothing
         spl = split(string(body), "::")
         nm = string(spl[1])
         push!(vals_and_args, parse(nm * "::String"))
+        #push!(body_vals_args, nm)
+        route_conds["body"] = nm
         push!(args, Symbol(nm))
         typ = length(spl) > 1 ? Symbol(spl[2]) : :String
         push!(convert_args_block.args, :($(Symbol(nm)) = JSON2.read($(eval(current_module(), typ)), IOBuffer($(Symbol(nm))))))
     end
+
+    #route_conds["body"] = body_vals_args
+    route_conds["seg_types"] = seg_types
+    push!(PATH_TABLE, route_conds)
+
     return quote
         function $(esc(Symbol(Endpoints))).$(:__uri_dispatch__)(::$(method_val), $(vals_and_args...); query_params...)
             # convert args to expected types
@@ -128,8 +168,7 @@ end
 
 function __uri_dispatch__ end
 
-const PATH_LOOKUPS = Dict{String,DataType}()
-
+const PATH_TABLE = []
 # get, head, post, put, delete, trace, connect, patch, options
 const METHOD_VALS = Dict{HTTP.Method, DataType}(m=>Val{Symbol(m)} for m in instances(HTTP.Method))
 
@@ -148,13 +187,71 @@ end
 
 const BUF = IOBuffer()
 
+function match_conds(route, req_comps)
+    routing_conds = ["scheme", "domain"]
+    for (i, cond) in enumerate(routing_conds)
+        if haskey(route, cond) && route[cond] != req_comps[i]
+            return false
+        end
+    end
+    return true
+end
+
 function handler(req, resp)
-    vals_and_args = Any[get(PATH_LOOKUPS, seg, seg) for seg in HTTP.splitpath(HTTP.resource(HTTP.uri(req)), length(BASE_PATH) + 1)]
+    #vals_and_args = Any[get(PATH_LOOKUPS, seg, seg) for seg in HTTP.splitpath(HTTP.resource(HTTP.uri(req)), length(BASE_PATH) + 1)]
+    req_uri = HTTP.uri(req)
+    req_path = HTTP.splitpath(HTTP.resource(req_uri), length(BASE_PATH) + 1)
+    req_comps = [HTTP.scheme(req_uri), HTTP.hostname(req_uri)]
+    vals_and_args = []
+
+    for route in PATH_TABLE
+        vals_and_args = []
+        matched = true
+        if length(route["path"]) == length(req_path) && match_conds(route, req_comps)
+            for (i, seg) in enumerate(route["path"])
+                if route["seg_types"][i] == "hard-coded"
+                    # hard-coded path value
+                    path_val = Val{Symbol(req_path[i])}
+                    if path_val == seg
+                        push!(vals_and_args, path_val)
+                    else
+                        matched = false
+                        break
+                    end
+                else
+                    # variable path segment
+                    push!(vals_and_args, req_path[i])
+                end
+            end
+
+            if matched && METHOD_VALS[HTTP.method(req)] != route["method"]
+                matched = false
+            end
+            if matched && haskey(route, "scheme") && route["scheme"] != HTTP.scheme(req_uri)
+                matched = false
+            end
+            if matched && haskey(route, "domain") && route["domain"] != HTTP.hostname(req_uri)
+                matched = false
+            end
+            if matched
+                if haskey(route, "body") && length(HTTP.body(req)) > 0 && String(take!(req)) != route["body"]
+                    matched = false
+                end
+            end
+        else
+            continue
+        end
+        if matched == true
+            if length(HTTP.body(req)) > 0
+                push!(vals_and_args, String(take!(req)))
+            end
+            break
+        end
+    end
+
     method_val = METHOD_VALS[HTTP.method(req)]
     query_params = parsequerystring(HTTP.query(HTTP.uri(req)))
-    if length(HTTP.body(req)) > 0
-        push!(vals_and_args, String(take!(req)))
-    end
+
     local ret
     try
         ret = Endpoints.__uri_dispatch__(method_val, vals_and_args...; query_params...)
